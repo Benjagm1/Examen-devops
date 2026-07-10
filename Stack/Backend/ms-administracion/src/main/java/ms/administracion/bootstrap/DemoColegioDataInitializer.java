@@ -31,10 +31,13 @@ import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-
+import org.springframework.context.annotation.Profile;
 import org.springframework.core.annotation.Order;
 
 import org.springframework.stereotype.Component;
+import org.springframework.context.annotation.Profile;
+
+
 
 
 
@@ -55,10 +58,12 @@ import java.util.Optional;
  */
 
 @Component
+@Profile("!prod")
 
 @Order(100)
 
 @ConditionalOnProperty(name = "app.demo.enabled", havingValue = "true", matchIfMissing = true)
+
 
 public class DemoColegioDataInitializer implements ApplicationRunner {
 

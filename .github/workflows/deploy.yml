@@ -1,121 +1,49 @@
-name: CI/CD - Libro de Clases Digital
+name: Frontend CI/CD Pipeline
 
 on:
   push:
-    branches: [ "main" ] # Se activa al hacer push a la rama principal
-
-env:
-  AWS_REGION: us-east-1 # La región por defecto de AWS Academy
+    branches:
+      - main  # Se ejecuta automáticamente cada vez que subes cambios a la rama main
 
 jobs:
-  # ==========================================
-  # JOB 1: COMPILACIÓN Y DESPLIEGUE DE BACKEND
-  # ==========================================
-  build-and-push-backend:
+  build-and-deploy:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # Definimos una matriz con el nombre de cada microservicio
-        service: [
-          'ms-auth',
-          'ms-administracion',
-          'ms-academico',
-          'ms-asistencia',
-          'ms-conducta',
-          'ms-mensajeria'
-        ]
+
     steps:
-      - name: Checkout del código
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 2 # Permite revisar el commit anterior para ver qué cambió
+    # 1. Descargar el código del repositorio
+    - name: Checkout Code
+      uses: actions/checkout@v4
 
-      # OPTIMIZACIÓN: Revisar si este microservicio en específico cambió
-      - name: Verificar cambios en el servicio
-        id: check_changes
-        run: |
-          if git diff --name-only HEAD~1 HEAD | grep -q "Stack/Backend/${{ matrix.service }}/"; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-          fi
+    # 2. Configurar las credenciales dinámicas de AWS usando los Secrets de GitHub
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets::AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets::AWS_SECRET_ACCESS_KEY }}
+        aws-session-token: ${{ secrets::AWS_SESSION_TOKEN }}
+        aws-region: us-east-1
 
-      # El resto de los pasos de este servicio solo se ejecutan si hubo cambios reales
-      - name: Configurar credenciales de AWS
-        if: steps.check_changes.outputs.changed == 'true'
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ env.AWS_REGION }}
+    # 3. Autenticarse en Amazon ECR de forma segura
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Autenticar en Amazon ECR
-        if: steps.check_changes.outputs.changed == 'true'
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+    # 4. Construir la imagen Docker sin caché para asegurar que tome el nuevo nginx.conf
+    - name: Build Docker Image
+      run: |
+        docker build --no-cache -f "Contenedores/Contenedor - frontend/Dockerfile" -t libro-clases-frontend:v2 .
 
-      - name: Configurar Docker Buildx
-        if: steps.check_changes.outputs.changed == 'true'
-        uses: docker/setup-buildx-action@v3
+    # 5. Etiquetar la imagen para el registro de AWS ECR
+    - name: Tag Image for ECR
+      run: |
+        docker tag libro-clases-frontend:v2 961575293682.dkr.ecr.us-east-1.amazonaws.com/libro-clases-frontend:v2
 
-      - name: Construir y Subir Imagen a ECR
-        if: steps.check_changes.outputs.changed == 'true'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: Contenedores/Contenedor - ${{ matrix.service }}/Dockerfile
-          push: true
-          tags: |
-            ${{ steps.login-ecr.outputs.registry }}/${{ matrix.service }}:latest
-            ${{ steps.login-ecr.outputs.registry }}/${{ matrix.service }}-${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+    # 6. Subir la imagen empaquetada al registro de ECR
+    - name: Push Image to Amazon ECR
+      run: |
+        docker push 961575293682.dkr.ecr.us-east-1.amazonaws.com/libro-clases-frontend:v2
 
-  # ==========================================
-  # JOB 2: COMPILACIÓN Y DESPLIEGUE DE FRONTEND
-  # ==========================================
-  build-and-push-frontend:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout del código
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-
-      - name: Verificar cambios en el Frontend
-        id: check_frontend
-        run: |
-          if git diff --name-only HEAD~1 HEAD | grep -q "Stack/frontend/frontend-bo/"; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Configurar credenciales de AWS
-        if: steps.check_frontend.outputs.changed == 'true'
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Autenticar en Amazon ECR
-        if: steps.check_frontend.outputs.changed == 'true'
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Construir y Subir Frontend a ECR
-        if: steps.check_frontend.outputs.changed == 'true'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: Contenedores/Contenedor - frontend/Dockerfile
-          push: true
-          tags: |
-            ${{ steps.login-ecr.outputs.registry }}/libro-clases-frontend:latest
-            ${{ steps.login-ecr.outputs.registry }}/libro-clases-frontend-${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+    # 7. Forzar el despliegue en Amazon ECS para actualizar la tarea en Fargate
+    - name: Deploy to Amazon ECS
+      run: |
+        aws ecs update-service --cluster cluster-libro-clases --service servicio-libro-clases-frontend --force-new-deployment
